@@ -15,7 +15,7 @@ param(
     [string]$ToolchainRoot = $env:SKEET_LLVM_MINGW_ROOT,
     [string]$CMake = 'cmake',
     [string]$Ninja = 'ninja',
-    [string]$BuildDirectory = (Join-Path $PSScriptRoot 'build\native-core-x86'),
+    [string]$BuildDirectory,
     [ValidateRange(1, 256)]
     [int]$Jobs = 4
 )
@@ -23,12 +23,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
+    $BuildDirectory = Join-Path $PSScriptRoot 'build\native-core-x86'
+}
 if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) {
     throw 'Pass -ToolchainRoot or set SKEET_LLVM_MINGW_ROOT to your LLVM-MinGW installation.'
 }
 $toolchainPath = (Resolve-Path -LiteralPath $ToolchainRoot).Path
-$cmakePath = (Get-Command $CMake -CommandType Application -ErrorAction Stop).Source
-$ninjaPath = (Get-Command $Ninja -CommandType Application -ErrorAction Stop).Source
+$cmakePath = (Get-Command $CMake -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1).Source
+$ninjaPath = (Get-Command $Ninja -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1).Source
 $buildPath = [System.IO.Path]::GetFullPath($BuildDirectory)
 if ($buildPath.TrimEnd('\', '/') -eq $PSScriptRoot.TrimEnd('\', '/')) {
     throw 'Use a separate build directory; generated files must not be written into the source root.'
