@@ -48,8 +48,10 @@ if(MINGW AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   # hide behind static archive extraction. This is an internal link check;
   # it has no client bootstrap or exported interface and is never deployed.
   set(_skeet_linkcheck "${CMAKE_CURRENT_BINARY_DIR}/skeet_core.linkcheck.dll")
+  # Cross toolchains may need their target and sysroot here because custom
+  # commands do not inherit CMAKE_CXX_FLAGS automatically.
   add_custom_command(OUTPUT "${_skeet_linkcheck}"
-    COMMAND "${CMAKE_CXX_COMPILER}" -static -shared
+    COMMAND "${CMAKE_CXX_COMPILER}" ${SKEET_LINKCHECK_COMPILER_FLAGS} -static -shared
       -Wl,--whole-archive "$<TARGET_FILE:skeet_core>" -Wl,--no-whole-archive
       "${_skeet_luajit_archive}"
       -Wl,--exclude-all-symbols -Wl,--no-insert-timestamp

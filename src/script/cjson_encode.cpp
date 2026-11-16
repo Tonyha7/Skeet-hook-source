@@ -202,16 +202,16 @@ static void json_append_number(lua_State* l, json_config_t* cfg, strbuf_t* json,
 
     if (cfg->encode_invalid_numbers == 0) {
         /* Prevent encoding invalid numbers */
-        if (isinf(num) || isnan(num))
+        if (std::isinf(num) || std::isnan(num))
             json_encode_exception(l, cfg, json, lindex, "must not be NaN or Infinity");
     } else if (cfg->encode_invalid_numbers == 1) {
         /* Encode invalid numbers, but handle "nan" separately
          * since some platforms may encode as "-nan". */
-        if (isnan(num)) {
+        if (std::isnan(num)) {
             strbuf_append_mem(json, "NaN", 3);
             return;
         }
-        if (isinf(num)) {
+        if (std::isinf(num)) {
             if (num < 0)
                 strbuf_append_mem(json, "-Infinity", 9);
             else
@@ -220,7 +220,7 @@ static void json_append_number(lua_State* l, json_config_t* cfg, strbuf_t* json,
         }
     } else {
         /* Encode invalid numbers as "null" */
-        if (isinf(num) || isnan(num)) {
+        if (std::isinf(num) || std::isnan(num)) {
             strbuf_append_mem(json, "null", 4);
             return;
         }
