@@ -43,7 +43,17 @@ struct FontRuntime::Impl {
     std::int32_t atlas_width = 0, atlas_height = 0, x = 0, y = 0;
     std::uint32_t flags = 0;
     bool initialized = false;
+    // GetFontUnicodeRanges only describes the face itself. GDI font linking
+    // (FontLink\SystemLink, e.g. Verdana -> Microsoft YaHei UI) renders and
+    // shapes characters that are absent from that list, so the list gates the
+    // font-selection chain only; create_glyph decides per character.
     std::array<std::uint32_t, 2048> coverage{};
+    bool allows_unlisted = false;
+    // Negative cache for characters refused after a GDI probe, so text that
+    // repeats an unrenderable character does not re-run the probe every frame.
+    std::array<std::uint32_t, 2048> rejected{};
+    std::vector<std::uint32_t> missing_glyph;
+    std::vector<std::uint32_t> scratch;
     std::unordered_map<char16_t, GlyphRecord> records;
     std::vector<std::uint32_t> pixels;
     std::atomic_bool dirty = false;
@@ -60,10 +70,63 @@ struct FontRuntime::Impl {
         const auto c = static_cast<std::uint16_t>(character);
         return (coverage[c >> 5] & (std::uint32_t(1) << (c & 31))) != 0;
     }
+    bool refused(char16_t character) const noexcept {
+        const auto c = static_cast<std::uint16_t>(character);
+        return (rejected[c >> 5] & (std::uint32_t(1) << (c & 31))) != 0;
+    }
     bool failed(char16_t character) noexcept {
         const auto c = static_cast<std::uint16_t>(character);
         coverage[c >> 5] &= ~(std::uint32_t(1) << (c & 31));
+        rejected[c >> 5] |= std::uint32_t(1) << (c & 31);
         return false;
+    }
+    // 0xE000..0xF8FF are private use, where fonts legitimately hold icon
+    // glyphs that a link list could otherwise resolve to unrelated text.
+    static bool linkable(char16_t character) noexcept {
+        const auto c = static_cast<std::uint16_t>(character);
+        return c >= 0x20 && !(c >= 0xE000 && c <= 0xF8FF);
+    }
+    // Draw one character with GDI into the scratch bitmap. Returns the
+    // bitmap in scratch, or false when GDI produced nothing at all.
+    bool render_to_dib(char16_t character) {
+        const auto size = std::size_t(dib_width) * std::size_t(dib_height);
+        if (scratch.size() != size)
+            scratch.resize(size);
+        std::memset(dib, 0, size * 4);
+        SetBkColor(dc, 0);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, 0xffffff);
+        SetTextAlign(dc, 0);
+        const wchar_t text = static_cast<wchar_t>(character);
+        const auto success = ExtTextOutW(dc, 0, 0, 0, nullptr, &text, 1, nullptr);
+        GdiFlush();
+        std::memcpy(scratch.data(), dib,
+                    static_cast<std::size_t>(dib_width) * dib_height * sizeof(std::uint32_t));
+        if (!success)
+            return false;
+        for (const auto pixel : scratch)
+            if (pixel)
+                return true;
+        return false;
+    }
+    // Cache the character GDI substitutes for an unassigned code point. Some
+    // faces contribute no substitute of their own because a link supplies one.
+    bool render_missing_test() {
+        constexpr char16_t substitute_probe = u'\uFFFF';
+        if (missing_glyph.size() != std::size_t(dib_width) * std::size_t(dib_height)) {
+            if (!render_to_dib(substitute_probe))
+                return false;
+            missing_glyph = scratch;
+        }
+        return true;
+    }
+    // A character is drawable when its rendering differs from the substitute
+    // bitmap. Identical bitmaps are the font's "missing glyph" box, which must
+    // not shadow a later font in the selection chain that does have it.
+    bool renders_glyph(char16_t character) {
+        if (!render_to_dib(character))
+            return character == u' ';
+        return scratch != missing_glyph;
     }
     void reserve_glyph(std::int32_t width) {
         if (x + width >= atlas_width) {
@@ -100,10 +163,19 @@ struct FontRuntime::Impl {
     bool create_glyph(char16_t character) { // 4332F22F; batch 433CA690
         if (records.contains(character))
             return true;
-        if (!initialized || !covered(character))
+        if (!initialized)
             return false;
-        ABC abc{};
         const auto c = static_cast<UINT>(character);
+        // A face without the character can still draw it through GDI font
+        // linking, so ask GDI directly before rejecting it. Linked glyphs are
+        // measured and drawn by GDI, because the outline path resolves both
+        // from the base face and would report the wrong advance.
+        const auto linked = !covered(character) && allows_unlisted && linkable(character) &&
+                            !refused(character) && render_missing_test() &&
+                            renders_glyph(character);
+        if (!covered(character) && !linked)
+            return failed(character);
+        ABC abc{};
         if (flags & 2) {
             if (!GetCharABCWidthsW(dc, c, c, &abc))
                 return failed(character);
@@ -113,7 +185,7 @@ struct FontRuntime::Impl {
                 return failed(character);
             abc.abcB = static_cast<UINT>(width);
         }
-        if ((flags & 2) && abc.abcB == 2 && !(flags & 4)) {
+        if ((flags & 2) && abc.abcB == 2 && !(flags & 4) && !linked) {
             MAT2 matrix{};
             matrix.eM11.value = matrix.eM22.value = 1;
             GLYPHMETRICS gm{};
@@ -144,7 +216,32 @@ struct FontRuntime::Impl {
             if (!abc.abcA && !abc.abcB && !abc.abcC)
                 return failed(character);
             const std::int32_t border = (flags >> 2) & 1;
-            const auto width = static_cast<std::int32_t>(abc.abcB) + border * 2;
+            auto width = static_cast<std::int32_t>(abc.abcB) + border * 2;
+            if (linked) {
+                // A linked face draws at its own size, so its ink can reach
+                // past the base face's advance box. Widen the cell to the ink
+                // that GDI actually produced instead of truncating it.
+                std::memset(dib, 0, static_cast<std::size_t>(dib_width) * dib_height * 4);
+                SetBkColor(dc, 0);
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, 0xffffff);
+                SetTextAlign(dc, 0);
+                const wchar_t text = static_cast<wchar_t>(character);
+                const auto success =
+                    ExtTextOutW(dc, border - abc.abcA, border, 0, nullptr, &text, 1, nullptr);
+                GdiFlush();
+                if (!success)
+                    return failed(character);
+                for (std::int32_t row = 0; row < dib_height; ++row)
+                    for (std::int32_t column = 0; column < dib_width; ++column)
+                        if (dib[static_cast<std::size_t>(row) * dib_width + column] &&
+                            column + 2 * border + 1 > width)
+                            width = column + 2 * border + 1;
+                // The scratch bitmap bounds the cell; a linked face wider than
+                // the base face still draws, just clipped to what GDI returned.
+                if (width > dib_width)
+                    width = dib_width;
+            }
             reserve_glyph(width);
             std::memset(dib, 0, static_cast<std::size_t>(dib_width) * dib_height * 4);
             if (character != u'\t' && character != u' ') {
@@ -253,6 +350,9 @@ FontRuntime::FontRuntime(std::u16string_view face, std::int32_t height, std::uin
     SelectObject(state.dc, state.bitmap);
     state.atlas_width = height > 60 ? 2048 : height > 20 ? 1024 : height > 8 ? 512 : 256;
     state.flags = flags;
+    // Font linking lets a face draw characters outside its own ranges, so a
+    // character absent from the face is probed with GDI before being refused.
+    state.allows_unlisted = true;
     state.initialized = true;
 }
 FontRuntime::~FontRuntime() = default;

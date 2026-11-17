@@ -1,8 +1,10 @@
 #include "skeet/hud/observer_panel.hpp"
+#include "skeet/esp/player_overlay.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <bit>
+#include <string_view>
 
 namespace skeet::hud {
 void draw_observer_panel(ui::RenderQueue& queue, esp::PlayerFrameState& state,
@@ -24,11 +26,14 @@ void draw_observer_panel(ui::RenderQueue& queue, esp::PlayerFrameState& state,
     ObserverPlayerInfo info;
     if (!engine.player_info(engine.context, entity_index, info) || info.hltv || info.fake_player)
         return;
-    info.name[20] = '\0';
+    // The native name buffer holds 20 bytes. Stop at the last complete UTF-8
+    // sequence so a Chinese name is not cut mid-character into U+FFFD.
+    const auto length = std::min<std::size_t>(
+        esp::utf8_prefix(std::string_view(info.name.data()), 20), 20);
     std::array<wchar_t, 256> wide;
-    const auto count = MultiByteToWideChar(CP_UTF8, 0, info.name.data(), -1, wide.data(),
-                                           static_cast<int>(wide.size()));
-    if (count <= 1)
+    const auto count = MultiByteToWideChar(CP_UTF8, 0, info.name.data(), static_cast<int>(length),
+                                           wide.data(), static_cast<int>(wide.size()));
+    if (count <= 0)
         return;
     const auto row = std::uint32_t(state.transient);
     state.transient = std::bit_cast<std::int32_t>(row + 1);
@@ -36,7 +41,7 @@ void draw_observer_panel(ui::RenderQueue& queue, esp::PlayerFrameState& state,
     const auto y = std::bit_cast<std::int32_t>(row * 20 + 5);
     static_assert(sizeof(wchar_t) == sizeof(char16_t));
     queue.text(x, y, 0xC8FFFFFFu, 0x88, 0,
-               {reinterpret_cast<const char16_t*>(wide.data()), std::size_t(count - 1)});
+               {reinterpret_cast<const char16_t*>(wide.data()), std::size_t(count)});
 }
 void draw_prepared_observer(ui::RenderQueue& queue, esp::PlayerFrameState& state,
                             const ObserverEngine& engine, const esp::RuntimePlayer* initial_view,

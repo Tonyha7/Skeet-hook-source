@@ -2,12 +2,28 @@
 #include "config.hpp"
 #include "flags.hpp"
 #include "skeet/core.hpp"
+#include <string_view>
 
 namespace skeet::esp {
 
 // 0x4340A644: native player names are terminated after 20 UTF-8 bytes before
 // MultiByteToWideChar(CP_UTF8, 0), including its incomplete-sequence behavior.
 std::u16string player_name(std::string_view utf8);
+
+// Cutting a UTF-8 sequence at the native byte limit leaves an invalid tail
+// that MultiByteToWideChar replaces with U+FFFD, so the cut backs up to the
+// last complete sequence. Shared by the name and observer-panel paths.
+inline std::size_t utf8_prefix(std::string_view text, std::size_t limit) noexcept {
+    if (limit >= text.size())
+        return text.size();
+    auto cut = limit;
+    for (std::size_t i = 0; i != 4 && cut != 0; ++i) {
+        if ((static_cast<unsigned char>(text[cut]) & 0xC0) != 0x80)
+            break;
+        --cut;
+    }
+    return cut;
+}
 
 void draw_box(ui::RenderQueue& queue, Rectangle box, std::uint32_t color);
 void draw_health(ui::RenderQueue& queue, Rectangle box, std::int32_t health,

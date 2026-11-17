@@ -3,6 +3,9 @@
 #include <array>
 #include <bit>
 #include <cwchar>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 
 namespace skeet::script {
 using namespace detail;
@@ -34,10 +37,14 @@ void draw_flags(Bridge& bridge, ReferenceStrings& strings, ui::RenderQueue& queu
                     if (!text || length == 0) {
                         advance = false;
                     } else {
+                        // Lua strings are UTF-8. msvcrt's L"%hs" decodes them
+                        // through the process ANSI code page instead, which
+                        // turns every Chinese character into two garbage
+                        // units, so decode the bytes as UTF-8 directly.
                         std::array<wchar_t, 1026> buffer{};
-                        // Native 0x4334DBF5 uses msvcrt vswprintf_s with L"%hs".
-                        // This deliberately follows that CRT's multibyte locale.
-                        const auto converted = swprintf_s(buffer.data(), 1024, L"%hs", text);
+                        const auto converted = MultiByteToWideChar(
+                            CP_UTF8, 0, text, static_cast<int>(length), buffer.data(),
+                            static_cast<int>(buffer.size() - 1));
                         if (converted > 0) {
                             static_assert(sizeof(wchar_t) == sizeof(char16_t));
                             queue.text(cursor.x, cursor.y, color, 4, 0,

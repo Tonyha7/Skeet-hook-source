@@ -10,13 +10,15 @@ using namespace detail;
 
 std::u16string player_name(std::string_view utf8) {
     char input[21]{};
-    std::copy_n(utf8.data(), std::min<std::size_t>(utf8.size(), 20), input);
+    const auto length = utf8_prefix(utf8, 20);
+    std::copy_n(utf8.data(), length, input);
     wchar_t output[256];
-    const auto count = MultiByteToWideChar(CP_UTF8, 0, input, -1, output, 256);
-    if (count <= 1)
+    const auto count = MultiByteToWideChar(CP_UTF8, 0, input, static_cast<int>(length), output,
+                                           256);
+    if (count <= 0)
         return {};
     static_assert(sizeof(wchar_t) == sizeof(char16_t));
-    return {reinterpret_cast<const char16_t*>(output), std::size_t(count - 1)};
+    return {reinterpret_cast<const char16_t*>(output), std::size_t(count)};
 }
 
 void draw_box(ui::RenderQueue& q, Rectangle b, std::uint32_t color) { // 0x4340AB68..0x4340AC1C

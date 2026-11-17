@@ -63,17 +63,18 @@ void draw_weapon_text(ui::RenderQueue& queue, WeaponTextProvider provider, std::
         std::array<char, 64> narrow{};
         std::copy_n(token + 13, length - 13, narrow.begin());
         _strupr_s(narrow.data(), narrow.size());
-        const auto count = _snwprintf(wide.data(), wide.size(), L"%hs", narrow.data());
-        if (count > 0)
+        // Tokens are UTF-8. msvcrt's L"%hs" would read them in the ANSI code
+        // page and turn any non-ASCII label into mojibake, and it also
+        // disagreed with the UTF-8 measurement below.
+        const auto count = MultiByteToWideChar(CP_UTF8, 0, narrow.data(), -1, wide.data(),
+                                               static_cast<int>(wide.size()));
+        if (count > 1)
             queue.text(sub(position.x, 1), position.y, color, 0x14, 0,
-                       {reinterpret_cast<const char16_t*>(wide.data()), std::size_t(count)});
+                       {reinterpret_cast<const char16_t*>(wide.data()), std::size_t(count - 1)});
         if (measured_size) { // 0x433B578E -> UTF-8 conversion 0x43396CB3
-            wchar_t measured[1024]{};
-            const auto converted =
-                MultiByteToWideChar(CP_UTF8, 0, narrow.data(), -1, measured, 1024);
             *measured_size = ui::measure_text(queue,
-                                              {reinterpret_cast<const char16_t*>(measured),
-                                               converted > 0 ? std::size_t(converted - 1) : 0},
+                                              {reinterpret_cast<const char16_t*>(wide.data()),
+                                               count > 1 ? std::size_t(count - 1) : 0},
                                               4);
         }
     }
