@@ -152,9 +152,11 @@ void prepare_idle_layer(RestrictedPlayerCommandOwner& owner, void* player, void*
                         write(layer, 0x24, (weight - previous) / delta);
                     }
                 }
-                write(state, 0x138,
-                      std::uint8_t(read<float>(layer, 0x28) * delta + read<float>(layer, 0x2C) <
-                                   0.9990000128746033f));
+                // Reference: adjust_started = layer3.cycle < 1. advance_cycle already
+                // applied this tick's increment and clamps a completed cycle to the
+                // engine's 0.999 sentinel, so test the advanced cycle directly
+                // instead of pre-applying another increment.
+                write(state, 0x138, std::uint8_t(read<float>(layer, 0x2C) < 0.9990000128746033f));
             } else {
                 write(state, 0x138, std::uint8_t(0));
                 const auto previous = read<float>(layer, 0x20);
